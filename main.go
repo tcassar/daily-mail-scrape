@@ -1,4 +1,4 @@
-/* Daily Mail News Scraper (for Roxy)
+/* Daily Mail News Scraper
 *
 * Script which pulls comments from the Daily Mail
 * Reverse engineered from
@@ -9,11 +9,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -69,6 +72,13 @@ type ScrapeCfg struct {
 	timeout     time.Duration
 }
 
+func NewScrapeCfg(maxComments int, timeout time.Duration) *ScrapeCfg {
+	return &ScrapeCfg{
+		maxComments: maxComments,
+		timeout:     timeout,
+	}
+}
+
 func DefaultScrapeCfg() *ScrapeCfg {
 	return &ScrapeCfg{
 		maxComments: 506,
@@ -85,10 +95,15 @@ type ArticleInfo struct {
 
 func ArticleInfoFromURL(
 	logger *zap.SugaredLogger,
-	url string,
+	dmURL string,
 	cfg *ScrapeCfg,
 ) (*ArticleInfo, error) {
-	match := urlMatcher.FindStringSubmatch(url)
+	parsedURL, err := url.Parse(dmURL)
+	if err != nil || parsedURL.Hostname() != "www.dailymail.co.uk" {
+		return nil, fmt.Errorf("%w: invalid URL", ErrInvalidURL)
+	}
+
+	match := urlMatcher.FindStringSubmatch(parsedURL.String())
 
 	if match == nil {
 		return nil, fmt.Errorf("%w: URL didn't match expected structure", ErrInvalidURL)
@@ -143,6 +158,8 @@ func (a *ArticleInfo) scrapeComments(browser *rod.Browser) (io.ReadSeeker, error
 		return nil, fmt.Errorf("failed to setup browser: %w", err)
 	}
 
+	defer page.Close()
+
 	err = rod.Try(func() {
 		page.Timeout(a.scrapeCfg.timeout).MustNavigate(a.commentsEndpoint())
 	})
@@ -163,7 +180,7 @@ func (a *ArticleInfo) scrapeComments(browser *rod.Browser) (io.ReadSeeker, error
 		return nil, fmt.Errorf("failed to retrieve text from webpage: %w", err)
 	}
 
-	// a.logger.Infow("comments scraped", "text", text)
+	a.logger.Infow("comments scraped")
 
 	return strings.NewReader(text), nil
 }
@@ -180,11 +197,53 @@ func (a *ArticleInfo) parseResp(body io.ReadSeeker) (*CommentResponse, error) {
 		return nil, fmt.Errorf("failed to read from body")
 	}
 
-	if err := json.Unmarshal(data, &response); err != nil {
+	if err := json.Unmarshal(bts, &response); err != nil {
 		return nil, err
 	}
 
 	return &response, nil
+}
+
+func CommentsToCSV(comments []*Comment) (io.ReadSeeker, error) {
+	buffer := &bytes.Buffer{}
+	writer := csv.NewWriter(buffer)
+
+	headers := []string{
+		"user-alias", "user-location", "formatted-date-and-time", "asset-id", "vote-count",
+		"id", "user-identifier", "has-profile-picture", "vote-rating", "date-created",
+		"asset-comment-count", "asset-url", "message",
+	}
+	if err := writer.Write(headers); err != nil {
+		return nil, err
+	}
+
+	for _, c := range comments {
+		row := []string{
+			c.UserAlias,
+			c.UserLocation,
+			c.FormattedDate,
+			strconv.Itoa(c.AssetID),
+			strconv.Itoa(c.VoteCount),
+			strconv.FormatInt(c.ID, 10),
+			c.UserIdentifier,
+			strconv.FormatBool(c.HasProfilePicture),
+			strconv.Itoa(c.VoteRating),
+			c.DateCreated,
+			strconv.Itoa(c.AssetCommentCount),
+			c.AssetURL,
+			c.Message,
+		}
+		if err := writer.Write(row); err != nil {
+			return nil, err
+		}
+	}
+
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		return nil, err
+	}
+
+	return bytes.NewReader(buffer.Bytes()), nil
 }
 
 // MustNotErr exits the program and reports the err to stderr if err != nil
@@ -221,19 +280,23 @@ func main() {
 	rawComments, err := aInfo.scrapeComments(browser)
 	MustNotErr(err, "failed to scrape comments")
 
-	_, err = rawComments.Seek(0, io.SeekStart)
-	MustNotErr(err, "failed to seek to start of reader")
-
-	bts, err := io.ReadAll(rawComments)
-	MustNotErr(err, "failed to read from rawComments")
-
-	fmt.Println(string(bts))
+	logger.Infow("parsing response from browser")
 
 	commentResp, err := aInfo.parseResp(rawComments)
 	MustNotErr(err, "failed to parse scrape")
 
-	// bts, err := json.Marshal(commentResp.Payload.Page)
-	// MustNotErr(err, "failed to marshall JSON")
-	//
-	// fmt.Println(string(bts))
+	logger.Infow("saving comments as csv")
+
+	commentsAsCSV, err := CommentsToCSV(commentResp.Payload.Page)
+	MustNotErr(err, "failed to format comments as CSV")
+
+	bts, err := io.ReadAll(commentsAsCSV)
+	MustNotErr(err, "failed to read comments as csv")
+
+	filename := fmt.Sprintf("%s-comments.csv", aInfo.Name)
+
+	err = os.WriteFile(filename, bts, 0777)
+	MustNotErr(err, "failed to save comments to file")
+
+	logger.Infow("scrape successful!")
 }
