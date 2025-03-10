@@ -1,6 +1,6 @@
 # Scraping the Daily Mail
 
-Sometimes you want some proper new (said with heavy sarcasm). So why not turn to the Daily Mail?
+Sometimes you want some proper news. So why not turn to the Daily Mail (said with **heavy** sarcasm)?
 
 Often more cogent than the published articles are the things said in the comments. Use this (slightly unstable)
 tool to scrape the comments under any daily mail article
@@ -11,9 +11,9 @@ tool to scrape the comments under any daily mail article
 **Disclaimer**: this was speed written and doesn't have a fleshed out CLI. Coming soon (if I can be bothered).
 
 ```shell
-go run main.go [URL to a Daily Mail article]
-
+./dm-scrape [URL to a Daily Mail article]
 ```
+(Build from source by cloning, `cd`-ing and running `go build .`)
 
 Some log lines will be written to stderr. If all goes well, a CSV of comments will be written to a file named
 '[article name]-comments.csv'.
@@ -23,6 +23,3 @@ Some log lines will be written to stderr. If all goes well, a CSV of comments wi
 (see comments for why automated browser tooling is involved here)
 
 ...
-
-
-
