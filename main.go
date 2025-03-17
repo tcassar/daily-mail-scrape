@@ -27,7 +27,10 @@ import (
 	"go.uber.org/zap"
 )
 
-const JSONTag string = "pre"
+const (
+	JSONTag string = "pre"
+	Retries int    = 3
+)
 
 var (
 	usage      string = "---\nUSAGE:\n\tdm-scrape <DAILY MAIL URL>\n---\n> comments will be displayed in [articleID]-comments.csv\n"
@@ -82,7 +85,7 @@ func NewScrapeCfg(maxComments int, timeout time.Duration) *ScrapeCfg {
 func DefaultScrapeCfg() *ScrapeCfg {
 	return &ScrapeCfg{
 		maxComments: 506,
-		timeout:     9 * time.Second,
+		timeout:     15 * time.Second,
 	}
 }
 
@@ -262,7 +265,7 @@ func MustNotErr(err error, msg string) {
 
 func main() {
 	if len(os.Args) != 2 {
-		MustNotErr(errors.New("wrong number of arguments!"), usage)
+		MustNotErr(errors.New("wrong number of arguments"), usage)
 	}
 
 	l, err := zap.NewProduction()
@@ -277,13 +280,24 @@ func main() {
 	browser := rod.New().MustConnect()
 	defer browser.Close()
 
-	rawComments, err := aInfo.scrapeComments(browser)
-	MustNotErr(err, "failed to scrape comments")
+	var commentResp *CommentResponse
+	retries := 0
 
-	logger.Infow("parsing response from browser")
+	for retries <= Retries {
+		rawComments, err := aInfo.scrapeComments(browser)
+		MustNotErr(err, "failed to scrape comments")
 
-	commentResp, err := aInfo.parseResp(rawComments)
-	MustNotErr(err, "failed to parse scrape")
+		logger.Infow("parsing response from browser")
+
+		commentResp, err = aInfo.parseResp(rawComments)
+		if err == nil {
+			break
+		}
+
+		retries++
+
+		logger.Warnw("scrape failed - retrying", "attempt", retries, "err", err)
+	}
 
 	logger.Infow("saving comments as csv")
 
@@ -295,7 +309,7 @@ func main() {
 
 	filename := fmt.Sprintf("%s-comments.csv", aInfo.Name)
 
-	err = os.WriteFile(filename, bts, 0777)
+	err = os.WriteFile(filename, bts, 0o777)
 	MustNotErr(err, "failed to save comments to file")
 
 	logger.Infow("scrape successful!")
